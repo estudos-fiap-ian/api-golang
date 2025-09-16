@@ -132,16 +132,19 @@ jobs:
           fi
         fi
 
-        # Apply PVC first and wait for it to be ready
+        # Try to apply PVC, but don't wait if it fails
         kubectl apply -f k8s/app-uploads-pvc.yaml
 
-        # Give the PVC more time to bind
-        echo "Waiting for PVC to bind..."
-        kubectl wait --for=condition=Bound pvc/uploads-pvc --timeout=600s || {
-          echo "PVC binding timeout. Checking status..."
-          kubectl describe pvc uploads-pvc
-          kubectl get events --sort-by=.metadata.creationTimestamp | tail -10
-        }
+        # Check if PVC binds quickly, otherwise use deployment without PVC
+        echo "Checking if PVC can bind..."
+        if kubectl wait --for=condition=Bound pvc/uploads-pvc --timeout=60s; then
+          echo "PVC bound successfully, using normal deployment"
+          DEPLOYMENT_FILE="k8s/app-deployment.yaml"
+        else
+          echo "PVC binding failed, using deployment without persistent storage"
+          kubectl delete pvc uploads-pvc --ignore-not-found=true
+          DEPLOYMENT_FILE="k8s/app-deployment-no-pvc.yaml"
+        fi
 
         # Apply other resources
         kubectl apply -f k8s/postgre-statefulset.yaml
@@ -149,7 +152,7 @@ jobs:
 
         # Wait a moment before deploying the app
         sleep 10
-        kubectl apply -f k8s/app-deployment.yaml
+        kubectl apply -f $DEPLOYMENT_FILE
         kubectl apply -f k8s/app-service.yaml
         kubectl apply -f k8s/app-service-loadbalancer.yaml
         kubectl apply -f k8s/ingress.yaml
