@@ -76,8 +76,14 @@ jobs:
         kubectl wait --for=condition=Ready pod -l app=ebs-csi-controller -n kube-system --timeout=300s || echo "CSI controller pods not ready, continuing..."
         kubectl wait --for=condition=Ready pod -l app=ebs-csi-node -n kube-system --timeout=300s || echo "CSI node pods not ready, continuing..."
 
-        # Create or update gp2 storage class with immediate binding
-        kubectl apply -f - <<EOF
+        # Handle storage class properly
+        CURRENT_PROVISIONER=$(kubectl get storageclass gp2 -o jsonpath='{.provisioner}' 2>/dev/null || echo "")
+        if [ "$CURRENT_PROVISIONER" != "ebs.csi.aws.com" ]; then
+          echo "Deleting old storage class with provisioner: $CURRENT_PROVISIONER"
+          kubectl delete storageclass gp2 --ignore-not-found=true
+
+          # Create new storage class with correct provisioner
+          kubectl apply -f - <<EOF
         apiVersion: storage.k8s.io/v1
         kind: StorageClass
         metadata:
@@ -89,8 +95,11 @@ jobs:
           type: gp2
           fsType: ext4
         allowVolumeExpansion: true
-        volumeBindingMode: Immediate
+        volumeBindingMode: WaitForFirstConsumer
         EOF
+        else
+          echo "Storage class gp2 already exists with correct provisioner"
+        fi
 
         # List available storage classes
         echo "Available storage classes:"
@@ -113,8 +122,13 @@ jobs:
           if [ "$CURRENT_SC" != "gp2" ]; then
             echo "Deleting existing PVC with incorrect storage class: $CURRENT_SC"
             # Delete deployment first to release PVC
-            kubectl delete deployment go-web-api --ignore-not-found=true
-            kubectl delete pvc uploads-pvc --wait=true
+            kubectl delete deployment go-web-api --ignore-not-found=true --timeout=60s
+
+            # Wait for pods to terminate
+            kubectl wait --for=delete pod -l app=go-web-api --timeout=120s || echo "Pods still terminating, continuing..."
+
+            # Now delete PVC
+            kubectl delete pvc uploads-pvc --wait=true --timeout=60s
           fi
         fi
 
