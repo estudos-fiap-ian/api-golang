@@ -54,7 +54,7 @@ jobs:
       run: |
         aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name ${{ env.EKS_CLUSTER_NAME }}
 
-    - name: Install EBS CSI Driver
+    - name: Install EBS CSI Driver and Setup Storage
       run: |
         # Check if EBS CSI driver addon is installed
         if ! aws eks describe-addon --cluster-name ${{ env.EKS_CLUSTER_NAME }} --addon-name aws-ebs-csi-driver --region ${{ env.AWS_REGION }} 2>/dev/null; then
@@ -64,27 +64,37 @@ jobs:
             --addon-name aws-ebs-csi-driver \
             --region ${{ env.AWS_REGION }} \
             --resolve-conflicts OVERWRITE || echo "EBS CSI driver may already be installed via other method"
+
+          # Wait longer for addon to be fully ready
+          echo "Waiting for EBS CSI driver to be ready..."
+          sleep 60
         else
           echo "EBS CSI driver addon already exists"
         fi
 
-        # Wait for addon to be ready
-        echo "Waiting for EBS CSI driver to be ready..."
-        sleep 30
+        # Wait for CSI driver pods to be running
+        kubectl wait --for=condition=Ready pod -l app=ebs-csi-controller -n kube-system --timeout=300s || echo "CSI controller pods not ready, continuing..."
+        kubectl wait --for=condition=Ready pod -l app=ebs-csi-node -n kube-system --timeout=300s || echo "CSI node pods not ready, continuing..."
 
-        # Ensure gp2 storage class exists
-        kubectl get storageclass gp2 || kubectl apply -f - <<EOF
+        # Create or update gp2 storage class with immediate binding
+        kubectl apply -f - <<EOF
         apiVersion: storage.k8s.io/v1
         kind: StorageClass
         metadata:
           name: gp2
-        provisioner: kubernetes.io/aws-ebs
+          annotations:
+            storageclass.kubernetes.io/is-default-class: "true"
+        provisioner: ebs.csi.aws.com
         parameters:
           type: gp2
           fsType: ext4
         allowVolumeExpansion: true
-        volumeBindingMode: WaitForFirstConsumer
+        volumeBindingMode: Immediate
         EOF
+
+        # List available storage classes
+        echo "Available storage classes:"
+        kubectl get storageclass
 
     - name: Deploy to EKS
       env:
@@ -110,7 +120,14 @@ jobs:
 
         # Apply PVC first and wait for it to be ready
         kubectl apply -f k8s/app-uploads-pvc.yaml
-        kubectl wait --for=condition=Bound pvc/uploads-pvc --timeout=300s || echo "PVC not bound yet, continuing..."
+
+        # Give the PVC more time to bind
+        echo "Waiting for PVC to bind..."
+        kubectl wait --for=condition=Bound pvc/uploads-pvc --timeout=600s || {
+          echo "PVC binding timeout. Checking status..."
+          kubectl describe pvc uploads-pvc
+          kubectl get events --sort-by=.metadata.creationTimestamp | tail -10
+        }
 
         # Apply other resources
         kubectl apply -f k8s/postgre-statefulset.yaml
