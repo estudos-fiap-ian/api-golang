@@ -54,6 +54,38 @@ jobs:
       run: |
         aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name ${{ env.EKS_CLUSTER_NAME }}
 
+    - name: Install EBS CSI Driver
+      run: |
+        # Check if EBS CSI driver addon is installed
+        if ! aws eks describe-addon --cluster-name ${{ env.EKS_CLUSTER_NAME }} --addon-name aws-ebs-csi-driver --region ${{ env.AWS_REGION }} 2>/dev/null; then
+          echo "Installing EBS CSI driver addon..."
+          aws eks create-addon \
+            --cluster-name ${{ env.EKS_CLUSTER_NAME }} \
+            --addon-name aws-ebs-csi-driver \
+            --region ${{ env.AWS_REGION }} \
+            --resolve-conflicts OVERWRITE || echo "EBS CSI driver may already be installed via other method"
+        else
+          echo "EBS CSI driver addon already exists"
+        fi
+
+        # Wait for addon to be ready
+        echo "Waiting for EBS CSI driver to be ready..."
+        sleep 30
+
+        # Ensure gp2 storage class exists
+        kubectl get storageclass gp2 || kubectl apply -f - <<EOF
+        apiVersion: storage.k8s.io/v1
+        kind: StorageClass
+        metadata:
+          name: gp2
+        provisioner: kubernetes.io/aws-ebs
+        parameters:
+          type: gp2
+          fsType: ext4
+        allowVolumeExpansion: true
+        volumeBindingMode: WaitForFirstConsumer
+        EOF
+
     - name: Deploy to EKS
       env:
         ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
