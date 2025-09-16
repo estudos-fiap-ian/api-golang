@@ -1,0 +1,149 @@
+name: Deploy to EKS
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+env:
+  AWS_REGION: us-east-1
+  EKS_CLUSTER_NAME: grupo-275-cluster-ian
+  ECR_REPOSITORY: golunch-api
+  IMAGE_TAG: ${{ github.sha }}
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Create ECR repository if it doesn't exist
+      run: |
+        aws ecr describe-repositories --repository-names $ECR_REPOSITORY --region $AWS_REGION || \
+        aws ecr create-repository --repository-name $ECR_REPOSITORY --region $AWS_REGION
+
+    - name: Login to Amazon ECR
+      id: login-ecr
+      uses: aws-actions/amazon-ecr-login@v2
+
+    - name: Build, tag, and push image to Amazon ECR
+      env:
+        ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+      run: |
+        # Build the Docker image
+        docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
+        docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:latest .
+
+        # Push both tagged and latest images
+        docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+        docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
+
+    - name: Update kubeconfig
+      run: |
+        aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name ${{ env.EKS_CLUSTER_NAME }}
+
+    - name: Deploy to EKS
+      env:
+        ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+      run: |
+        # Replace image in deployment manifest
+        sed -i "s|lucasonofre/golunch:v1|$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG|g" k8s/app-deployment.yaml
+
+        # Apply Kubernetes manifests
+        kubectl apply -f k8s/secrets.yaml
+        kubectl apply -f k8s/configmap.yaml
+        kubectl apply -f k8s/app-uploads-pvc.yaml
+        kubectl apply -f k8s/postgre-statefulset.yaml
+        kubectl apply -f k8s/postgre-service.yaml
+        kubectl apply -f k8s/app-deployment.yaml
+        kubectl apply -f k8s/app-service.yaml
+        kubectl apply -f k8s/app-service-loadbalancer.yaml
+        kubectl apply -f k8s/ingress.yaml
+        kubectl apply -f k8s/hpa.yaml
+
+        # Wait for deployment to be ready
+        kubectl rollout status deployment/go-web-api --timeout=300s
+
+    - name: Verify deployment
+      run: |
+        kubectl get pods -l app=go-web-api
+        kubectl get services
+        kubectl describe service go-web-api-service
+
+    - name: Get Load Balancer URLs and Configuration
+      run: |
+        echo "Waiting for Load Balancer to be ready..."
+        sleep 60
+
+        # Get Network Load Balancer URL
+        NLB_URL=$(kubectl get service go-web-api-service-lb -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "")
+
+        # Get Application Load Balancer URL from Ingress
+        ALB_URL=$(kubectl get ingress go-web-api-ingress -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "")
+
+        # Get NodePort service details
+        NODE_PORT=$(kubectl get service go-web-api-service -o jsonpath='{.spec.ports[0].nodePort}')
+
+        echo "=== Deployment URLs ==="
+        if [ -n "$NLB_URL" ]; then
+          echo "🔗 Network Load Balancer: http://$NLB_URL:8080"
+          echo "   Health Check: http://$NLB_URL:8080/ping"
+          echo "   (Use this for API Gateway VPC Link)"
+        fi
+
+        if [ -n "$ALB_URL" ]; then
+          echo "🔗 Application Load Balancer: http://$ALB_URL"
+          echo "   Health Check: http://$ALB_URL/ping"
+        fi
+
+        echo "🔗 NodePort Service: NodePort $NODE_PORT"
+        echo ""
+
+        # Output for GitHub Actions environment
+        echo "NLB_URL=$NLB_URL" >> $GITHUB_ENV
+        echo "ALB_URL=$ALB_URL" >> $GITHUB_ENV
+        echo "NODE_PORT=$NODE_PORT" >> $GITHUB_ENV
+
+        # Get Load Balancer ARNs for API Gateway integration
+        if [ -n "$NLB_URL" ]; then
+          NLB_ARN=$(aws elbv2 describe-load-balancers \
+            --query "LoadBalancers[?DNSName=='$NLB_URL'].LoadBalancerArn" \
+            --output text)
+          echo "NLB_ARN=$NLB_ARN" >> $GITHUB_ENV
+          echo "📋 NLB ARN: $NLB_ARN"
+        fi
+
+  notify-success:
+    needs: build-and-deploy
+    runs-on: ubuntu-latest
+    if: success()
+
+    steps:
+    - name: Notify deployment success
+      run: |
+        echo "✅ Deployment to EKS completed successfully!"
+        echo "📊 Image: ${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }}"
+        echo "🏷️  Commit: ${{ github.sha }}"
+
+  notify-failure:
+    needs: build-and-deploy
+    runs-on: ubuntu-latest
+    if: failure()
+
+    steps:
+    - name: Notify deployment failure
+      run: |
+        echo "❌ Deployment to EKS failed!"
+        echo "🏷️  Commit: ${{ github.sha }}"
+        exit 1
