@@ -146,8 +146,9 @@ jobs:
         #   DEPLOYMENT_FILE="k8s/app-deployment-no-pvc.yaml"
         # fi
 
-        # Apply other resources
-        kubectl apply -f k8s/postgre-statefulset.yaml
+        # Apply other resources - using deployment instead of statefulset to avoid PVC issues
+        kubectl delete statefulset postgres --ignore-not-found=true
+        kubectl apply -f k8s/postgre-deployment-no-pvc.yaml
         kubectl apply -f k8s/postgre-service.yaml
 
         # Wait a moment before deploying the app
