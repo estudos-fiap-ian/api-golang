@@ -132,19 +132,19 @@ jobs:
           fi
         fi
 
-        # Try to apply PVC, but don't wait if it fails
-        kubectl apply -f k8s/app-uploads-pvc.yaml
+        # Skip PVC for now and use simpler storage approach
+        echo "Using deployment without persistent storage for faster deployment"
+        kubectl delete pvc uploads-pvc --ignore-not-found=true --force --grace-period=0
+        DEPLOYMENT_FILE="k8s/app-deployment-no-pvc.yaml"
 
-        # Check if PVC binds quickly, otherwise use deployment without PVC
-        echo "Checking if PVC can bind..."
-        if kubectl wait --for=condition=Bound pvc/uploads-pvc --timeout=60s; then
-          echo "PVC bound successfully, using normal deployment"
-          DEPLOYMENT_FILE="k8s/app-deployment.yaml"
-        else
-          echo "PVC binding failed, using deployment without persistent storage"
-          kubectl delete pvc uploads-pvc --ignore-not-found=true
-          DEPLOYMENT_FILE="k8s/app-deployment-no-pvc.yaml"
-        fi
+        # Future: uncomment below to try PVC first
+        # kubectl apply -f k8s/app-uploads-pvc.yaml
+        # if kubectl wait --for=condition=Bound pvc/uploads-pvc --timeout=30s; then
+        #   DEPLOYMENT_FILE="k8s/app-deployment.yaml"
+        # else
+        #   kubectl delete pvc uploads-pvc --ignore-not-found=true
+        #   DEPLOYMENT_FILE="k8s/app-deployment-no-pvc.yaml"
+        # fi
 
         # Apply other resources
         kubectl apply -f k8s/postgre-statefulset.yaml
