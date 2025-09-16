@@ -96,6 +96,15 @@ jobs:
         # Apply Kubernetes manifests
         kubectl apply -f k8s/secrets.yaml
         kubectl apply -f k8s/configmap.yaml
+
+        # Handle PVC recreation if storage class changed
+        if kubectl get pvc uploads-pvc 2>/dev/null; then
+          CURRENT_SC=$(kubectl get pvc uploads-pvc -o jsonpath='{.spec.storageClassName}')
+          if [ "$CURRENT_SC" != "gp2" ]; then
+            echo "Deleting existing PVC with incorrect storage class: $CURRENT_SC"
+            kubectl delete pvc uploads-pvc --wait=true
+          fi
+        fi
         kubectl apply -f k8s/app-uploads-pvc.yaml
         kubectl apply -f k8s/postgre-statefulset.yaml
         kubectl apply -f k8s/postgre-service.yaml
