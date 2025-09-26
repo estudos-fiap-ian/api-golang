@@ -9,7 +9,7 @@ API desenvolvida em Go para gerenciamento de pedidos em uma lanchonete. A arquit
 - [Go](https://golang.org/)
 - [Gin](https://github.com/gin-gonic/gin) – Framework HTTP
 - [GORM](https://gorm.io/) – ORM para Go
-- [Docker](https://www.docker.com/) – Containerização
+- [Docker](https://www.docker.com/) – Containerização.
 - [PostgreSQL](https://www.postgresql.org/) – Banco de dados relacional
 
 # 🍔 GoLunch API
