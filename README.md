@@ -4,7 +4,7 @@ API desenvolvida em Go para gerenciamento de pedidos em uma lanchonete. A arquit
 
 ### Link para o vídeo detalhando o projeto: https://www.youtube.com/watch?v=Il2WhYLpHsw
 
-## 🧰 Tecnologias Utilizadas:
+## 🧰 Tecnologias Utilizadas
 
 - [Go](https://golang.org/)
 - [Gin](https://github.com/gin-gonic/gin) – Framework HTTP
