@@ -155,9 +155,12 @@ jobs:
         sleep 10
         kubectl apply -f $DEPLOYMENT_FILE
         kubectl apply -f k8s/app-service.yaml
-        kubectl apply -f k8s/app-service-loadbalancer.yaml
+        # Removed LoadBalancer service to avoid dual NLB conflict
         kubectl apply -f k8s/ingress.yaml
         kubectl apply -f k8s/hpa.yaml
+
+        # Clean up any existing LoadBalancer service that conflicts with Terraform NLB
+        kubectl delete service go-web-api-service-lb --ignore-not-found=true
 
         # Wait for deployment to be ready
         kubectl rollout status deployment/go-web-api --timeout=300s
@@ -173,8 +176,9 @@ jobs:
         echo "Waiting for Load Balancer to be ready..."
         sleep 60
 
-        # Get Network Load Balancer URL
-        NLB_URL=$(kubectl get service go-web-api-service-lb -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "")
+        # Note: Using Terraform-managed NLB instead of Kubernetes LoadBalancer service
+        # NLB URL will be provided by terraform-infra outputs
+        echo "Using Terraform-managed NLB for API Gateway integration"
 
         # Get Application Load Balancer URL from Ingress
         ALB_URL=$(kubectl get ingress go-web-api-ingress -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "")
@@ -183,32 +187,28 @@ jobs:
         NODE_PORT=$(kubectl get service go-web-api-service -o jsonpath='{.spec.ports[0].nodePort}')
 
         echo "=== Deployment URLs ==="
-        if [ -n "$NLB_URL" ]; then
-          echo "🔗 Network Load Balancer: http://$NLB_URL:8080"
-          echo "   Health Check: http://$NLB_URL:8080/ping"
-          echo "   (Use this for API Gateway VPC Link)"
-        fi
+        echo "🔗 Terraform-managed NLB: Configured via terraform-infra"
+        echo "   API Gateway routes through VPC Link to this NLB"
+        echo "   Health Check: /ping endpoint on NodePort 30080"
 
         if [ -n "$ALB_URL" ]; then
           echo "🔗 Application Load Balancer: http://$ALB_URL"
           echo "   Health Check: http://$ALB_URL/ping"
         fi
 
-        echo "🔗 NodePort Service: NodePort $NODE_PORT"
+        echo "🔗 NodePort Service: NodePort $NODE_PORT (should be 30080)"
+        echo "   Direct EKS access for troubleshooting"
         echo ""
 
         # Output for GitHub Actions environment
-        echo "NLB_URL=$NLB_URL" >> $GITHUB_ENV
         echo "ALB_URL=$ALB_URL" >> $GITHUB_ENV
         echo "NODE_PORT=$NODE_PORT" >> $GITHUB_ENV
 
-        # Get Load Balancer ARNs for API Gateway integration
-        if [ -n "$NLB_URL" ]; then
-          NLB_ARN=$(aws elbv2 describe-load-balancers \
-            --query "LoadBalancers[?DNSName=='$NLB_URL'].LoadBalancerArn" \
-            --output text)
-          echo "NLB_ARN=$NLB_ARN" >> $GITHUB_ENV
-          echo "📋 NLB ARN: $NLB_ARN"
+        # Verify NodePort is correctly set to 30080
+        if [ "$NODE_PORT" = "30080" ]; then
+          echo "✅ NodePort correctly set to 30080 for Terraform NLB integration"
+        else
+          echo "⚠️  WARNING: NodePort is $NODE_PORT, expected 30080 for Terraform NLB"
         fi
 
   notify-success:
