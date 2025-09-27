@@ -211,8 +211,8 @@ jobs:
         kubectl apply -f k8s/ingress.yaml
         kubectl apply -f k8s/hpa.yaml
 
-        # Apply LoadBalancer service for webhook access
-        kubectl apply -f k8s/app-service-loadbalancer.yaml
+        # Remove any existing LoadBalancer services that may conflict
+        kubectl delete service go-web-api-service-lb --ignore-not-found=true
 
         # Wait for deployment to be ready
         kubectl rollout status deployment/go-web-api --timeout=300s
@@ -268,33 +268,53 @@ jobs:
 
     - name: Update webhook URL in ConfigMap
       run: |
-        # Wait for LoadBalancer to be fully provisioned
-        echo "⏳ Waiting for LoadBalancer to be ready..."
-        for i in {1..15}; do
-          LB_URL=$(kubectl get service go-web-api-service-lb -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "")
-          if [ -n "$LB_URL" ]; then
-            break
+        echo "🔧 Getting public IP of EKS nodes for webhook..."
+
+        # Get the public IP of any EKS node
+        NODE_IP=$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="ExternalIP")].address}' 2>/dev/null || echo "")
+
+        # If ExternalIP is not available, try to get it from instance metadata
+        if [ -z "$NODE_IP" ]; then
+          # Get node instance ID and then public IP
+          INSTANCE_ID=$(kubectl get nodes -o jsonpath='{.items[0].spec.providerID}' | cut -d'/' -f5)
+          if [ -n "$INSTANCE_ID" ]; then
+            NODE_IP=$(aws ec2 describe-instances --instance-ids $INSTANCE_ID --query 'Reservations[0].Instances[0].PublicIpAddress' --output text --region ${{ env.AWS_REGION }})
           fi
-          echo "   Attempt $i/15: LoadBalancer not ready yet, waiting 30 seconds..."
-          sleep 30
-        done
+        fi
 
-        if [ -n "$LB_URL" ]; then
-          echo "🔧 Updating webhook URL to: http://$LB_URL:8080/webhook/payment/check"
+        # Get NodePort
+        NODE_PORT=$(kubectl get service go-web-api-service -o jsonpath='{.spec.ports[0].nodePort}')
 
-          # Update the configmap with the actual LoadBalancer URL
-          kubectl patch configmap app-config -p '{"data":{"WEBHOOK_URL":"http://'$LB_URL':8080/webhook/payment/check"}}'
+        if [ -n "$NODE_IP" ] && [ "$NODE_IP" != "None" ] && [ "$NODE_IP" != "null" ]; then
+          WEBHOOK_URL="http://$NODE_IP:$NODE_PORT/webhook/payment/check"
+          echo "🔧 Updating webhook URL to: $WEBHOOK_URL"
+
+          # Update the configmap with the node IP and port
+          kubectl patch configmap app-config -p '{"data":{"WEBHOOK_URL":"'$WEBHOOK_URL'"}}'
 
           # Restart deployment to pick up new environment variables
           kubectl rollout restart deployment/go-web-api
           kubectl rollout status deployment/go-web-api --timeout=300s
 
           echo "✅ Webhook URL updated successfully"
-          echo "🔗 Your webhook URL is now: http://$LB_URL:8080/webhook/payment/check"
+          echo "🔗 Your webhook URL is now: $WEBHOOK_URL"
         else
-          echo "⚠️  LoadBalancer URL not ready after 7.5 minutes, keeping placeholder URL"
-          echo "   Run the workflow again or manually update the ConfigMap when LoadBalancer is ready"
-          echo "   You can check LoadBalancer status with: kubectl get service go-web-api-service-lb"
+          echo "⚠️  Could not get node public IP. Using fallback method..."
+
+          # Fallback: Use any available external endpoint
+          # Try to get LoadBalancer URL as backup
+          LB_URL=$(kubectl get service go-web-api-service-lb -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "")
+
+          if [ -n "$LB_URL" ]; then
+            WEBHOOK_URL="http://$LB_URL:8080/webhook/payment/check"
+            kubectl patch configmap app-config -p '{"data":{"WEBHOOK_URL":"'$WEBHOOK_URL'"}}'
+            kubectl rollout restart deployment/go-web-api
+            echo "✅ Webhook URL updated with LoadBalancer: $WEBHOOK_URL"
+          else
+            echo "⚠️  Neither node IP nor LoadBalancer available"
+            echo "   NodePort: $NODE_PORT"
+            echo "   You may need to manually configure webhook URL"
+          fi
         fi
 
   notify-success:
