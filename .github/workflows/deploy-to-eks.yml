@@ -206,6 +206,7 @@ jobs:
         if [ -n "$ALB_URL" ]; then
           echo "🔗 Application Load Balancer: http://$ALB_URL"
           echo "   Health Check: http://$ALB_URL/ping"
+          echo "   Webhook URL: http://$ALB_URL/webhook"
         fi
 
         echo "🔗 NodePort Service: NodePort $NODE_PORT (should be 30080)"
@@ -221,6 +222,26 @@ jobs:
           echo "✅ NodePort correctly set to 30080 for Terraform NLB integration"
         else
           echo "⚠️  WARNING: NodePort is $NODE_PORT, expected 30080 for Terraform NLB"
+        fi
+
+    - name: Update webhook URL in ConfigMap
+      run: |
+        ALB_URL=$(kubectl get ingress go-web-api-ingress -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "")
+
+        if [ -n "$ALB_URL" ]; then
+          echo "🔧 Updating webhook URL to: http://$ALB_URL/webhook"
+
+          # Update the configmap with the actual ALB URL
+          kubectl patch configmap app-config -p '{"data":{"WEBHOOK_URL":"http://'$ALB_URL'/webhook"}}'
+
+          # Restart deployment to pick up new environment variables
+          kubectl rollout restart deployment/go-web-api
+
+          echo "✅ Webhook URL updated successfully"
+        else
+          echo "⚠️  ALB URL not ready yet, keeping default webhook URL"
+          echo "   The ALB may take a few more minutes to be fully provisioned"
+          echo "   Webhook will be updated on next deployment when ALB is ready"
         fi
 
   notify-success:
