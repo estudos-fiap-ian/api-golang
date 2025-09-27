@@ -154,8 +154,17 @@ jobs:
         # Wait a moment before deploying the app
         sleep 10
         kubectl apply -f $DEPLOYMENT_FILE
+
+        # Apply the main NodePort service for NLB integration
         kubectl apply -f k8s/app-service.yaml
-        # Removed LoadBalancer service to avoid dual NLB conflict
+
+        # Apply the optimized NLB service
+        kubectl apply -f k8s/app-service-nlb.yaml
+
+        # Apply healthcheck service
+        kubectl apply -f k8s/healthcheck-service.yaml
+
+        # Apply ingress and HPA
         kubectl apply -f k8s/ingress.yaml
         kubectl apply -f k8s/hpa.yaml
 
@@ -170,6 +179,9 @@ jobs:
         kubectl get pods -l app=go-web-api
         kubectl get services
         kubectl describe service go-web-api-service
+        kubectl describe service go-web-api-service-nlb
+        echo "Checking NodePort service for NLB integration..."
+        kubectl get service go-web-api-service -o jsonpath='{.spec.ports[0].nodePort}'
 
     - name: Get Load Balancer URLs and Configuration
       run: |
