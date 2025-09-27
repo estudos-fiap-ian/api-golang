@@ -157,15 +157,13 @@ jobs:
 
         # Clean up any existing services that might conflict
         kubectl delete service go-web-api-service-nlb --ignore-not-found=true
+        kubectl delete service go-web-api-healthcheck --ignore-not-found=true
 
         # Wait a moment for cleanup
         sleep 5
 
         # Apply the main NodePort service for NLB integration
         kubectl apply -f k8s/app-service.yaml
-
-        # Apply healthcheck service
-        kubectl apply -f k8s/healthcheck-service.yaml
 
         # Apply ingress and HPA
         kubectl apply -f k8s/ingress.yaml
