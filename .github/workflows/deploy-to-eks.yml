@@ -54,6 +54,48 @@ jobs:
       run: |
         aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name ${{ env.EKS_CLUSTER_NAME }}
 
+    - name: Install AWS Load Balancer Controller
+      run: |
+        # Check if AWS Load Balancer Controller is already installed
+        if ! kubectl get deployment -n kube-system aws-load-balancer-controller 2>/dev/null; then
+          echo "Installing AWS Load Balancer Controller..."
+
+          # Download and install AWS Load Balancer Controller
+          curl -o iam_policy.json https://raw.githubusercontent.com/kubernetes-sigs/aws-load-balancer-controller/v2.7.2/docs/install/iam_policy.json
+
+          # Create IAM policy (ignore if already exists)
+          aws iam create-policy \
+            --policy-name AWSLoadBalancerControllerIAMPolicy \
+            --policy-document file://iam_policy.json || echo "Policy may already exist"
+
+          # Get cluster OIDC issuer
+          CLUSTER_NAME=${{ env.EKS_CLUSTER_NAME }}
+          OIDC_ISSUER=$(aws eks describe-cluster --name $CLUSTER_NAME --query "cluster.identity.oidc.issuer" --output text)
+
+          # Create service account with IAM role
+          kubectl create serviceaccount aws-load-balancer-controller -n kube-system --dry-run=client -o yaml | kubectl apply -f -
+
+          # Install AWS Load Balancer Controller using Helm
+          curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+          helm repo add eks https://aws.github.io/eks-charts
+          helm repo update
+
+          helm install aws-load-balancer-controller eks/aws-load-balancer-controller \
+            -n kube-system \
+            --set clusterName=${{ env.EKS_CLUSTER_NAME }} \
+            --set serviceAccount.create=false \
+            --set serviceAccount.name=aws-load-balancer-controller \
+            --set region=${{ env.AWS_REGION }} \
+            --set vpcId=$(aws eks describe-cluster --name ${{ env.EKS_CLUSTER_NAME }} --query "cluster.resourcesVpcConfig.vpcId" --output text)
+
+          # Wait for controller to be ready
+          kubectl wait --for=condition=Ready pod -l app.kubernetes.io/name=aws-load-balancer-controller -n kube-system --timeout=300s
+
+          echo "✅ AWS Load Balancer Controller installed successfully"
+        else
+          echo "✅ AWS Load Balancer Controller already installed"
+        fi
+
     - name: Install EBS CSI Driver and Setup Storage
       run: |
         # Check if EBS CSI driver addon is installed
@@ -169,8 +211,8 @@ jobs:
         kubectl apply -f k8s/ingress.yaml
         kubectl apply -f k8s/hpa.yaml
 
-        # Clean up any existing LoadBalancer service that conflicts with Terraform NLB
-        kubectl delete service go-web-api-service-lb --ignore-not-found=true
+        # Apply LoadBalancer service for webhook access
+        kubectl apply -f k8s/app-service-loadbalancer.yaml
 
         # Wait for deployment to be ready
         kubectl rollout status deployment/go-web-api --timeout=300s
@@ -226,33 +268,33 @@ jobs:
 
     - name: Update webhook URL in ConfigMap
       run: |
-        # Wait for ALB to be fully provisioned
-        echo "⏳ Waiting for ALB to be ready..."
-        for i in {1..10}; do
-          ALB_URL=$(kubectl get ingress go-web-api-ingress -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "")
-          if [ -n "$ALB_URL" ]; then
+        # Wait for LoadBalancer to be fully provisioned
+        echo "⏳ Waiting for LoadBalancer to be ready..."
+        for i in {1..15}; do
+          LB_URL=$(kubectl get service go-web-api-service-lb -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "")
+          if [ -n "$LB_URL" ]; then
             break
           fi
-          echo "   Attempt $i/10: ALB not ready yet, waiting 30 seconds..."
+          echo "   Attempt $i/15: LoadBalancer not ready yet, waiting 30 seconds..."
           sleep 30
         done
 
-        if [ -n "$ALB_URL" ]; then
-          echo "🔧 Updating webhook URL to: http://$ALB_URL/webhook/payment/check"
+        if [ -n "$LB_URL" ]; then
+          echo "🔧 Updating webhook URL to: http://$LB_URL:8080/webhook/payment/check"
 
-          # Update the configmap with the actual ALB URL
-          kubectl patch configmap app-config -p '{"data":{"WEBHOOK_URL":"http://'$ALB_URL'/webhook/payment/check"}}'
+          # Update the configmap with the actual LoadBalancer URL
+          kubectl patch configmap app-config -p '{"data":{"WEBHOOK_URL":"http://'$LB_URL':8080/webhook/payment/check"}}'
 
           # Restart deployment to pick up new environment variables
           kubectl rollout restart deployment/go-web-api
           kubectl rollout status deployment/go-web-api --timeout=300s
 
           echo "✅ Webhook URL updated successfully"
-          echo "🔗 Your webhook URL is now: http://$ALB_URL/webhook/payment/check"
+          echo "🔗 Your webhook URL is now: http://$LB_URL:8080/webhook/payment/check"
         else
-          echo "⚠️  ALB URL not ready after 5 minutes, keeping placeholder URL"
-          echo "   Run the workflow again or manually update the ConfigMap when ALB is ready"
-          echo "   You can check ALB status with: kubectl get ingress go-web-api-ingress"
+          echo "⚠️  LoadBalancer URL not ready after 7.5 minutes, keeping placeholder URL"
+          echo "   Run the workflow again or manually update the ConfigMap when LoadBalancer is ready"
+          echo "   You can check LoadBalancer status with: kubectl get service go-web-api-service-lb"
         fi
 
   notify-success:
