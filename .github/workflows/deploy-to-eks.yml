@@ -206,7 +206,7 @@ jobs:
         if [ -n "$ALB_URL" ]; then
           echo "🔗 Application Load Balancer: http://$ALB_URL"
           echo "   Health Check: http://$ALB_URL/ping"
-          echo "   Webhook URL: http://$ALB_URL/webhook"
+          echo "   Webhook URL: http://$ALB_URL/webhook/payment/check"
         fi
 
         echo "🔗 NodePort Service: NodePort $NODE_PORT (should be 30080)"
@@ -226,22 +226,33 @@ jobs:
 
     - name: Update webhook URL in ConfigMap
       run: |
-        ALB_URL=$(kubectl get ingress go-web-api-ingress -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "")
+        # Wait for ALB to be fully provisioned
+        echo "⏳ Waiting for ALB to be ready..."
+        for i in {1..10}; do
+          ALB_URL=$(kubectl get ingress go-web-api-ingress -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "")
+          if [ -n "$ALB_URL" ]; then
+            break
+          fi
+          echo "   Attempt $i/10: ALB not ready yet, waiting 30 seconds..."
+          sleep 30
+        done
 
         if [ -n "$ALB_URL" ]; then
-          echo "🔧 Updating webhook URL to: http://$ALB_URL/webhook"
+          echo "🔧 Updating webhook URL to: http://$ALB_URL/webhook/payment/check"
 
           # Update the configmap with the actual ALB URL
-          kubectl patch configmap app-config -p '{"data":{"WEBHOOK_URL":"http://'$ALB_URL'/webhook"}}'
+          kubectl patch configmap app-config -p '{"data":{"WEBHOOK_URL":"http://'$ALB_URL'/webhook/payment/check"}}'
 
           # Restart deployment to pick up new environment variables
           kubectl rollout restart deployment/go-web-api
+          kubectl rollout status deployment/go-web-api --timeout=300s
 
           echo "✅ Webhook URL updated successfully"
+          echo "🔗 Your webhook URL is now: http://$ALB_URL/webhook/payment/check"
         else
-          echo "⚠️  ALB URL not ready yet, keeping default webhook URL"
-          echo "   The ALB may take a few more minutes to be fully provisioned"
-          echo "   Webhook will be updated on next deployment when ALB is ready"
+          echo "⚠️  ALB URL not ready after 5 minutes, keeping placeholder URL"
+          echo "   Run the workflow again or manually update the ConfigMap when ALB is ready"
+          echo "   You can check ALB status with: kubectl get ingress go-web-api-ingress"
         fi
 
   notify-success:

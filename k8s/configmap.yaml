@@ -5,4 +5,4 @@ metadata:
 data:
   UPLOAD_DIR: "./uploads"
   PUBLIC_URL: "http://localhost:8080"
-  WEBHOOK_URL: "https://webhook.site/123e4567-e89b-12d3-a456-426614174000"
+  WEBHOOK_URL: "http://PLACEHOLDER-WILL-BE-REPLACED-AUTOMATICALLY/webhook/payment/check"
