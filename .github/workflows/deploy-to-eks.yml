@@ -155,11 +155,14 @@ jobs:
         sleep 10
         kubectl apply -f $DEPLOYMENT_FILE
 
+        # Clean up any existing services that might conflict
+        kubectl delete service go-web-api-service-nlb --ignore-not-found=true
+
+        # Wait a moment for cleanup
+        sleep 5
+
         # Apply the main NodePort service for NLB integration
         kubectl apply -f k8s/app-service.yaml
-
-        # Apply the optimized NLB service
-        kubectl apply -f k8s/app-service-nlb.yaml
 
         # Apply healthcheck service
         kubectl apply -f k8s/healthcheck-service.yaml
@@ -179,7 +182,6 @@ jobs:
         kubectl get pods -l app=go-web-api
         kubectl get services
         kubectl describe service go-web-api-service
-        kubectl describe service go-web-api-service-nlb
         echo "Checking NodePort service for NLB integration..."
         kubectl get service go-web-api-service -o jsonpath='{.spec.ports[0].nodePort}'
 
