@@ -9,7 +9,7 @@ on:
 
 env:
   AWS_REGION: us-east-1
-  EKS_CLUSTER_NAME: grupo-275-cluster-ian
+  EKS_CLUSTER_NAME: grupo-275-grupo-275-cluster-ian
   ECR_REPOSITORY: golunch-api
   IMAGE_TAG: ${{ github.sha }}
 
